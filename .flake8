@@ -1,0 +1,78 @@
+[flake8]
+# Line length - matches Black's default
+max-line-length = 88
+
+# Errors and warnings to ignore
+extend-ignore =
+    # These are Black-compatible
+    E203,  # Whitespace before ':'
+    W503,  # Line break before binary operator
+    E231,  # Missing whitespace after ','
+    # Common exceptions
+    B008,  # Do not perform function calls in argument defaults
+    # Add more as needed with explanations
+
+# Excluded directories and files
+exclude =
+    .git,
+    __pycache__,
+    build,
+    dist,
+    *.egg-info,
+    .eggs,
+    releases,
+    .venv,
+    venv,
+    env,
+    .env,
+    .tox,
+    .mypy_cache,
+    .pytest_cache,
+    .coverage,
+    htmlcov,
+    .vscode,
+    .idea,
+    .github,
+    docs/_build,
+    node_modules
+
+# Per-file ignores
+per-file-ignores =
+    # Allow unused imports in __init__ files
+    __init__.py: F401
+    # Allow long lines in specific files (e.g., URLs or long strings)
+    docs/conf.py: E501
+    # Test files can be more complex
+    tests/*: E501,S101
+
+# Maximum complexity allowed
+max-complexity = 8
+
+# Additional configurations
+max-line-length-suggestions = 80  # Soft limit for suggestions
+inline-quotes = double
+multiline-quotes = double
+docstring-quotes = double
+import-order-style = google
+application-import-names = your_app_name
+doctests = True
+statistics = True
+count = True
+show-source = True
+
+# Flake8 plugins settings
+# flake8-docstrings
+docstring-convention = google
+
+# flake8-import-order
+import-order-style = google
+application-import-names = your_app_name
+
+# flake8-bugbear
+select = B,B9
+
+# flake8-comprehensions
+select = C4
+
+# flake8-return
+select = R
