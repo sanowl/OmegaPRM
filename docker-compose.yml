@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  omega_prm:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    volumes:
+      - ./data:/app/data
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-""}
+      - WANDB_API_KEY=${WANDB_API_KEY:-""}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  jupyter:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: jupyter lab --ip 0.0.0.0 --port 8888 --allow-root --no-browser
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/app/notebooks
+      - ./data:/app/data

@@ -2,127 +2,36 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from collections import defaultdict, deque
+from collections import defaultdict
 import math
 import logging
 import json
-from typing import Dict, List, Tuple, Optional, Union
-from dataclasses import dataclass
-import numpy as np
-from torch.utils.data import Dataset, DataLoader
+from typing import Dict, List, Tuple, Optional, Union, Any
+from pathlib import Path
 import concurrent.futures
 from tqdm import tqdm
 import wandb
-import os
-from pathlib import Path
+import numpy as np
+from torch.utils.data import DataLoader
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('omega_prm.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+from ..config import OmegaPRMConfig
+from ..models.process_reward_model import ProcessRewardModel
+from ..models.lru_cache import LRUCache
+from ..data.dataset import PRMDataset
+from ..utils.logging_config import get_logger
 
-@dataclass
-class OmegaPRMConfig:
-    """Configuration class for OmegaPRM hyperparameters and settings"""
-    model_name: str = "gpt2"
-    search_limit: int = 100
-    alpha: float = 0.5
-    beta: float = 0.9
-    L: int = 500
-    cpuct: float = 0.125
-    batch_size: int = 32
-    learning_rate: float = 0.001
-    hidden_size: int = 256
-    max_length: int = 512
-    cache_size: int = 10000
-    num_workers: int = 4
-    use_wandb: bool = False
-    checkpoint_dir: str = "checkpoints"
-    
-    def validate(self):
-        """Validate configuration parameters"""
-        assert 0 <= self.alpha <= 1, "Alpha must be between 0 and 1"
-        assert 0 <= self.beta <= 1, "Beta must be between 0 and 1"
-        assert self.search_limit > 0, "Search limit must be positive"
-        assert self.L > 0, "L must be positive"
-        assert self.cpuct > 0, "cpuct must be positive"
-        assert self.batch_size > 0, "Batch size must be positive"
-        assert self.learning_rate > 0, "Learning rate must be positive"
-
-class LRUCache:
-    """Least Recently Used Cache implementation"""
-    def __init__(self, capacity: int):
-        self.cache = {}
-        self.capacity = capacity
-        self.usage = deque(maxlen=capacity)
-        
-    def get(self, key: str) -> Optional[torch.Tensor]:
-        if key in self.cache:
-            self.usage.remove(key)
-            self.usage.append(key)
-            return self.cache[key]
-        return None
-        
-    def put(self, key: str, value: torch.Tensor):
-        if key in self.cache:
-            self.usage.remove(key)
-        elif len(self.cache) >= self.capacity:
-            oldest = self.usage.popleft()
-            del self.cache[oldest]
-        self.cache[key] = value
-        self.usage.append(key)
-
-class ProcessRewardModel(nn.Module):
-    """Enhanced Process Reward Model with dropout and layer normalization"""
-    def __init__(self, input_size: int, hidden_size: int, output_size: int, dropout: float = 0.1):
-        super(ProcessRewardModel, self).__init__()
-        self.fc1 = nn.Linear(input_size, hidden_size)
-        self.ln1 = nn.LayerNorm(hidden_size)
-        self.dropout = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(hidden_size, hidden_size // 2)
-        self.ln2 = nn.LayerNorm(hidden_size // 2)
-        self.fc3 = nn.Linear(hidden_size // 2, output_size)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.dropout(torch.relu(self.ln1(self.fc1(x))))
-        x = self.dropout(torch.relu(self.ln2(self.fc2(x))))
-        x = torch.sigmoid(self.fc3(x))
-        return x
-
-class PRMDataset(Dataset):
-    """Dataset class for Process Reward Model training"""
-    def __init__(self, solutions: List[str], rewards: List[float], tokenizer, max_length: int):
-        self.solutions = solutions
-        self.rewards = rewards
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        
-    def __len__(self) -> int:
-        return len(self.solutions)
-        
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        solution = self.solutions[idx]
-        reward = self.rewards[idx]
-        
-        inputs = self.tokenizer.encode(
-            solution,
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_tensors='pt'
-        )
-        
-        return inputs.squeeze(), torch.tensor([reward], dtype=torch.float32)
+logger = get_logger(__name__)
 
 class OmegaPRM:
-    """Enhanced OmegaPRM implementation with validation, GPU support, and performance optimizations"""
+    """OmegaPRM implementation with validation, GPU support, and performance optimizations"""
     def __init__(self, config: OmegaPRMConfig, golden_answers: Dict[str, str]):
+        """
+        Initialize OmegaPRM
+        
+        Args:
+            config (OmegaPRMConfig): Configuration object
+            golden_answers (Dict[str, str]): Dictionary of golden answers
+        """
         self.config = config
         self.config.validate()
         self.golden_answers = golden_answers
@@ -162,12 +71,18 @@ class OmegaPRM:
         # Initialize wandb if enabled
         if config.use_wandb:
             wandb.init(project="omega-prm", config=vars(config))
-        
+            
         # Create checkpoint directory
         Path(config.checkpoint_dir).mkdir(exist_ok=True)
 
     def save_checkpoint(self, epoch: int, validation_loss: float):
-        """Save model checkpoint"""
+        """
+        Save model checkpoint
+        
+        Args:
+            epoch (int): Current epoch number
+            validation_loss (float): Current validation loss
+        """
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self.prm.state_dict(),
@@ -180,8 +95,16 @@ class OmegaPRM:
         torch.save(checkpoint, path)
         logger.info(f"Saved checkpoint to {path}")
 
-    def load_checkpoint(self, path: str):
-        """Load model checkpoint"""
+    def load_checkpoint(self, path: str) -> Tuple[int, float]:
+        """
+        Load model checkpoint
+        
+        Args:
+            path (str): Path to checkpoint file
+            
+        Returns:
+            Tuple[int, float]: Epoch number and validation loss
+        """
         try:
             checkpoint = torch.load(path, map_location=self.device)
             self.prm.load_state_dict(checkpoint['model_state_dict'])
@@ -194,7 +117,16 @@ class OmegaPRM:
 
     @torch.no_grad()
     def get_ucb_score(self, state: str, action: str) -> float:
-        """Calculate Upper Confidence Bound (UCB) score"""
+        """
+        Calculate Upper Confidence Bound (UCB) score
+        
+        Args:
+            state (str): Current state
+            action (str): Proposed action
+            
+        Returns:
+            float: UCB score
+        """
         state_action = (state, action)
         Q = self.Q_values[state_action]
         N = self.visit_counts[state_action]
@@ -205,9 +137,21 @@ class OmegaPRM:
         )
         return Q + self.config.alpha * exploration_term
 
-    def parallel_monte_carlo_rollout(self, questions: List[str], solution_prefixes: List[str]
+    def parallel_monte_carlo_rollout(
+        self,
+        questions: List[str],
+        solution_prefixes: List[str]
     ) -> List[Tuple[List[Tuple[str, float]], float]]:
-        """Perform Monte Carlo rollouts in parallel"""
+        """
+        Perform Monte Carlo rollouts in parallel
+        
+        Args:
+            questions (List[str]): List of questions
+            solution_prefixes (List[str]): List of solution prefixes
+            
+        Returns:
+            List[Tuple[List[Tuple[str, float]], float]]: Results of rollouts
+        """
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.config.num_workers
         ) as executor:
@@ -219,9 +163,21 @@ class OmegaPRM:
         return results
 
     @torch.no_grad()
-    def monte_carlo_estimation(self, question: str, solution_prefix: str
+    def monte_carlo_estimation(
+        self,
+        question: str,
+        solution_prefix: str
     ) -> Tuple[List[Tuple[str, float]], float]:
-        """Perform Monte Carlo rollouts with caching and beta discount"""
+        """
+        Perform Monte Carlo rollouts with caching and beta discount
+        
+        Args:
+            question (str): Input question
+            solution_prefix (str): Solution prefix
+            
+        Returns:
+            Tuple[List[Tuple[str, float]], float]: Rollout results and cumulative reward
+        """
         rollouts = []
         cumulative_reward = 0
         
@@ -252,7 +208,16 @@ class OmegaPRM:
         return rollouts, cumulative_reward
 
     def train_epoch(self, train_loader: DataLoader, epoch: int) -> float:
-        """Train one epoch of the PRM"""
+        """
+        Train one epoch of the PRM
+        
+        Args:
+            train_loader (DataLoader): Training data loader
+            epoch (int): Current epoch number
+            
+        Returns:
+            float: Average training loss
+        """
         self.prm.train()
         total_loss = 0
         
@@ -283,7 +248,15 @@ class OmegaPRM:
 
     @torch.no_grad()
     def validate(self, val_loader: DataLoader) -> float:
-        """Validate the PRM"""
+        """
+        Validate the PRM
+        
+        Args:
+            val_loader (DataLoader): Validation data loader
+            
+        Returns:
+            float: Average validation loss
+        """
         self.prm.eval()
         total_loss = 0
         
@@ -297,9 +270,23 @@ class OmegaPRM:
         
         return total_loss / len(val_loader)
 
-    def train_prm(self, train_dataset: List[str], val_dataset: List[str],
-                 num_epochs: int = 10) -> Dict[str, List[float]]:
-        """Train the Process Reward Model with validation and logging"""
+    def train_prm(
+        self,
+        train_dataset: List[str],
+        val_dataset: List[str],
+        num_epochs: int = 10
+    ) -> Dict[str, List[float]]:
+        """
+        Train the Process Reward Model
+        
+        Args:
+            train_dataset (List[str]): Training dataset
+            val_dataset (List[str]): Validation dataset
+            num_epochs (int): Number of training epochs
+            
+        Returns:
+            Dict[str, List[float]]: Training history
+        """
         # Prepare datasets
         train_solutions, train_rewards = self.prepare_training_data(train_dataset)
         val_solutions, val_rewards = self.prepare_training_data(val_dataset)
@@ -353,8 +340,19 @@ class OmegaPRM:
         
         return history
 
-    def prepare_training_data(self, dataset: List[str]) -> Tuple[List[str], List[float]]:
-        """Prepare training data with parallel processing"""
+    def prepare_training_data(
+        self,
+        dataset: List[str]
+    ) -> Tuple[List[str], List[float]]:
+        """
+        Prepare training data with parallel processing
+        
+        Args:
+            dataset (List[str]): Raw dataset
+            
+        Returns:
+            Tuple[List[str], List[float]]: Processed solutions and rewards
+        """
         solutions = []
         rewards = []
         
@@ -384,7 +382,16 @@ class OmegaPRM:
         return solutions, rewards
 
     def complete_solution(self, question: str, solution_prefix: str) -> str:
-        """Generate solution completion with error handling"""
+        """
+        Generate solution completion
+        
+        Args:
+            question (str): Input question
+            solution_prefix (str): Solution prefix
+            
+        Returns:
+            str: Completed solution
+        """
         try:
             inputs = self.tokenizer.encode(
                 question + solution_prefix,
@@ -407,7 +414,16 @@ class OmegaPRM:
             raise
 
     def compare_with_golden_answer(self, question: str, rollout: str) -> bool:
-        """Compare generated answer with golden answer"""
+        """
+        Compare generated answer with golden answer
+        
+        Args:
+            question (str): Input question
+            rollout (str): Generated answer
+            
+        Returns:
+            bool: Whether the answer matches
+        """
         try:
             golden_answer = self.golden_answers.get(question)
             if golden_answer is None:
@@ -418,7 +434,12 @@ class OmegaPRM:
             raise
 
     def get_metrics(self) -> Dict[str, float]:
-        """Calculate and return performance metrics"""
+        """
+        Calculate and return performance metrics
+        
+        Returns:
+            Dict[str, float]: Performance metrics
+        """
         metrics = {
             'average_q_value': np.mean(list(self.Q_values.values())),
             'total_visits': sum(self.visit_counts.values()),
@@ -428,7 +449,12 @@ class OmegaPRM:
         return metrics
 
     def export_results(self, output_path: str):
-        """Export results and metrics to JSON"""
+        """
+        Export results and metrics to JSON
+        
+        Args:
+            output_path (str): Output file path
+        """
         results = {
             'tree': dict(self.tree),
             'metrics': self.get_metrics(),
@@ -439,8 +465,9 @@ class OmegaPRM:
             json.dump(results, f, indent=2)
         logger.info(f"Results exported to {output_path}")
 
-# Example usage with enhanced features
+# Optional: Add CLI interface
 def main():
+    """Main entry point"""
     # Configuration
     config = OmegaPRMConfig(
         model_name="gpt2",
