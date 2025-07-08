@@ -4,9 +4,9 @@ from typing import List, Tuple, Dict, Any, Optional
 from transformers import PreTrainedTokenizer
 import numpy as np
 from collections import Counter
-import random
 import string
 import re
+import secrets
 
 class PRMDataset(Dataset):
     """Dataset class for Process Reward Model training with advanced augmentation"""
@@ -74,7 +74,7 @@ class PRMDataset(Dataset):
         reward = self.rewards[idx]
         
         # Apply augmentation with probability
-        if self.augment and random.random() < self.augment_prob:
+        if self.augment and secrets.SystemRandom().random() < self.augment_prob:
             solution = self._augment_text(solution)
         
         # Try to get from cache first
@@ -133,7 +133,7 @@ class PRMDataset(Dataset):
             self._insert_char
         ]
         
-        augmenter = random.choice(augmentation_types)
+        augmenter = secrets.choice(augmentation_types)
         return augmenter(text)
 
     def _insert_typo(self, text: str) -> str:
@@ -146,14 +146,14 @@ class PRMDataset(Dataset):
             return text
             
         # Choose random word
-        word_idx = random.randint(0, len(words) - 1)
+        word_idx = secrets.SystemRandom().randint(0, len(words) - 1)
         word = words[word_idx]
         
         if len(word) < 2:
             return text
             
         # Choose random position
-        pos = random.randint(0, len(word) - 1)
+        pos = secrets.SystemRandom().randint(0, len(word) - 1)
         
         # Common keyboard typos
         typos = {
@@ -186,7 +186,7 @@ class PRMDataset(Dataset):
         }
         
         if word[pos] in typos:
-            new_char = random.choice(typos[word[pos]])
+            new_char = secrets.choice(typos[word[pos]])
             word = word[:pos] + new_char + word[pos + 1:]
             words[word_idx] = word
             
@@ -198,7 +198,7 @@ class PRMDataset(Dataset):
         if len(words) < 2:
             return text
             
-        pos = random.randint(0, len(words) - 2)
+        pos = secrets.SystemRandom().randint(0, len(words) - 2)
         words[pos], words[pos + 1] = words[pos + 1], words[pos]
         return ' '.join(words)
 
@@ -208,13 +208,13 @@ class PRMDataset(Dataset):
         if not words:
             return text
             
-        word_idx = random.randint(0, len(words) - 1)
+        word_idx = secrets.SystemRandom().randint(0, len(words) - 1)
         word = words[word_idx]
         
         if len(word) in self.vocab and len(self.vocab[len(word)]) > 1:
             substitutes = [w for w in self.vocab[len(word)] if w != word]
             if substitutes:
-                words[word_idx] = random.choice(substitutes)
+                words[word_idx] = secrets.choice(substitutes)
                 
         return ' '.join(words)
 
@@ -223,7 +223,7 @@ class PRMDataset(Dataset):
         if not text:
             return text
             
-        pos = random.randint(0, len(text) - 1)
+        pos = secrets.SystemRandom().randint(0, len(text) - 1)
         return text[:pos] + text[pos + 1:]
 
     def _insert_char(self, text: str) -> str:
@@ -231,8 +231,8 @@ class PRMDataset(Dataset):
         if not text:
             return text
             
-        pos = random.randint(0, len(text))
-        char = random.choice(string.ascii_lowercase)
+        pos = secrets.SystemRandom().randint(0, len(text))
+        char = secrets.choice(string.ascii_lowercase)
         return text[:pos] + char + text[pos:]
 
     def get_statistics(self) -> Dict[str, Any]:
@@ -256,7 +256,7 @@ class PRMDataset(Dataset):
 
     def get_batch(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get random batch of samples"""
-        indices = random.sample(range(len(self)), min(batch_size, len(self)))
+        indices = secrets.SystemRandom().sample(range(len(self)), min(batch_size, len(self)))
         batch_inputs = []
         batch_rewards = []
         
